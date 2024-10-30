@@ -7,8 +7,6 @@
 #' @param comparisonList the list of overlap comparisons ie from iterate(myNetworks, overlapComparisons, ...) 
 #' @param moduleOfInterest module of interest, ie "combined_001"
 #' @param design the sampleTable design matrix
-#' @param overlapCutoff cutoff to remove module correspondences with less than this number of genes
-#' @param padjCutoff cutoff to remove module correspondences above this significance value
 #' @param removeOutliers remove outlier modules? 
 #' @param alpha alpha level of significance
 #' @param layout layout of network to be passed to plot function of igraph object, defaults to multiWGCNA custom layout
@@ -16,8 +14,6 @@
 #' @param vjust vertical justification of labels
 #' @param width width of labels
 #' @param colors colors to use for modules, should be the same length as the number of WGCNA objects in the WGCNAlist. Defaults to random colors for each condition. 
-#' 
-#' @return an igraph plot
 #'
 #' @author Dario Tommasini
 #'
@@ -41,7 +37,129 @@
 #'   sampleTable)
 #'   
 drawMultiWGCNAnetwork <- function(WGCNAlist, comparisonList, moduleOfInterest, design, 
-                                  overlapCutoff = 0, padjCutoff = 1, removeOutliers = TRUE, alpha = 1e-50, 
+                                  removeOutliers = TRUE, alpha = 1e-50, 
+                                  layout = NULL, hjust = 0.4, vjust = 0.3, width = 0.5, colors = NULL){
+  
+  # extract the overlaps objects into a list
+  overlapList=lapply(comparisonList, function(x) x$overlap)
+  overlapList=do.call(rbind, overlapList)
+  filteredOverlapList=overlapList
+  
+  # remove outliers if necessary
+  if(removeOutliers) {
+    for(WGCNA in WGCNAlist){
+      filteredOverlapList=filteredOverlapList[!filteredOverlapList$mod1 %in% WGCNA@outlierModules,]
+      filteredOverlapList=filteredOverlapList[!filteredOverlapList$mod2 %in% WGCNA@outlierModules,]
+    }
+  }
+  
+  admittedModules=unique(c(filteredOverlapList$mod1, filteredOverlapList$mod2))
+  
+  # generate the multiWGCNA layout
+  if(is.null(layout)){
+    myCoords=list()
+    for(level in 1:3){
+      WGCNAs=getLevel(level, design)
+      from=0-width*length(WGCNAs)/2
+      to=0+width*length(WGCNAs)/2
+      x.coordinates=seq(from, to, length.out=length(WGCNAs))
+      if(level==1) x.coordinates=0
+      for(nWGCNA in 1:length(WGCNAs)){
+        nModules=length(admittedModules[startsWith(admittedModules, WGCNAs[[nWGCNA]]) ])
+        myCoords=append(myCoords, list(cbind(runif(nModules, x.coordinates[[nWGCNA]], x.coordinates[[nWGCNA]]+hjust), 3-level+runif(nModules, -vjust, vjust))))
+      }
+    }
+    layout=do.call(rbind, myCoords)
+  }
+  
+  #make the igraph object
+  graph=graph_from_data_frame(d=filteredOverlapList, directed = FALSE)
+  
+  #node and edge attributes
+  vcol=str_split_fixed(V(graph)$name, "_", 2)[,1]
+  conditions=unique(vcol)
+  
+  # Colors of modules by condition
+  if(is.null(colors)) palette = colors(length(conditions), random = TRUE)
+  if(!is.null(colors)) palette = colors
+  
+  for(condition in 1:length(conditions)){
+    vcol[vcol==conditions[[condition]] ]=palette[[condition]]
+  }
+  V(graph)$color=vcol
+  
+  # edge attributes
+  E(graph)$weight=-log10(E(graph)$p.adj)
+  E(graph)$width=rescale(E(graph)$weight, from=c(0, 320), to=c(0,5))
+  ealpha=rescale(-log10(E(graph)$p.adj), from=c(0, 320), to=c(0,1))
+  ecol=lapply(ealpha, function(x) rgb(1, 0, 0, x))
+  E(graph)$color=unlist(ecol)
+  
+  modulesOfInterest=unique(c(filteredOverlapList$mod2[filteredOverlapList$mod1==moduleOfInterest & filteredOverlapList$p.adj<alpha], 
+                             filteredOverlapList$mod1[filteredOverlapList$mod2==moduleOfInterest & filteredOverlapList$p.adj<alpha]))
+  
+  # delete edges
+  graph <- delete.edges(graph, which(!(filteredOverlapList$mod1 %in% modulesOfInterest | filteredOverlapList$mod2 %in% modulesOfInterest)))
+  
+  # plot graph
+  plot(graph, vertex.label.color="black", vertex.size=3, vertex.label=NA,
+       vertex.label.cex=.5, layout=layout) 
+  
+  # second call to plot over with edges of interest
+  legend("right", legend = conditions, pch=21, col=palette, pt.bg=palette,
+         pt.cex=1, cex=.8, bty="n", ncol=1)
+}
+
+#' Draw multiWGCNA network (v2)
+#'
+#' Draw a network where nodes are modules and edges represent significant gene overlap. 
+#' Modules are sorted by levels 1, 2, and 3. Nodes with edges < `alpha.vertex` are labeled
+#' and the edge list is returned by the function of use by the user.
+#'
+#' @param WGCNAlist list of WGCNA objects
+#' @param comparisonList the list of overlap comparisons ie from iterate(myNetworks, overlapComparisons, ...) 
+#' @param moduleOfInterest module of interest, ie "combined_001"
+#' @param design the sampleTable design matrix
+#' @param removeOutliers remove outlier modules? 
+#' @param alpha alpha level of edge significance
+#' @param alpha.vertex alpha level of edge significance for printing vertex labels
+#' @param layout layout of network to be passed to plot function of igraph object, defaults to multiWGCNA custom layout
+#' @param hjust horizontal justification of labels
+#' @param vjust vertical justification of labels
+#' @param width width of labels
+#' @param colors colors to use for modules, should be the same length as the number of WGCNA objects in the WGCNAlist. Defaults to random colors for each condition. 
+#' @param vertex.label.cex The font size for vertex labels.
+#' @param vertex.label.degree It defines the position of the vertex labels, relative to the center of the vertices. It is interpreted as an angle in radians, zero means ‘to the right’, and ‘pi’ means to the left, up is -pi/2 and down is pi/2.
+#' @param vertex.label.dist The distance of the label from the center of the vertex. If it is 0 then the label is centered on the vertex. If it is 1 then the label is displayed beside the vertex.
+#' @param vertex.label.color The color of the vertex (node) label text
+#' 
+#' @return list of significant edges
+#'
+#' @author Dario Tommasini (Modified Timothy Stephens)
+#'
+#' @importFrom igraph graph_from_data_frame delete.edges V V<- E E<- plot.igraph
+#' @import stringr 
+#' @importFrom scales rescale
+#' @export
+#' 
+#' @examples
+#' library(ExperimentHub)
+#' eh = ExperimentHub()
+#' eh_query = query(eh, c("multiWGCNAdata"))
+#' astrocyte_se = eh_query[["EH8223"]]
+#' sampleTable = colData(astrocyte_se)
+#' astrocyte_networks = eh_query[["EH8222"]]
+#' results = list()
+#' results$overlaps = iterate(astrocyte_networks, overlapComparisons, plot=FALSE)
+#' drawMultiWGCNAnetwork(astrocyte_networks, 
+#'   results$overlaps, 
+#'   "combined_013", 
+#'   sampleTable)
+#'   
+drawMultiWGCNAnetwork2 <- function(WGCNAlist, comparisonList, moduleOfInterest, design, 
+                                  removeOutliers = TRUE, alpha = 1e-50, alpha.vertex = 1e-10,
+                                  vertex.label.cex = 0.5, vertex.label.degree = 0, vertex.label.dist = 1,
+                                  vertex.label.color = "red3",
                                   layout = NULL, hjust = 0.4, vjust = 0.3, width = 0.5, colors = NULL){
 
   # extract the overlaps objects into a list
@@ -104,16 +222,27 @@ drawMultiWGCNAnetwork <- function(WGCNAlist, comparisonList, moduleOfInterest, d
 	
 	# delete edges
 	graph <- delete.edges(graph, which(!(filteredOverlapList$mod1 %in% modulesOfInterest | filteredOverlapList$mod2 %in% modulesOfInterest)))
-
+	selected.edges=filteredOverlapList[which((filteredOverlapList$mod1 %in% modulesOfInterest | filteredOverlapList$mod2 %in% modulesOfInterest) & filteredOverlapList$p.adj<alpha.vertex), ]
+	
+	# setup labels - nodes with significant edges get their names shown, nodes without are blank.
+	g.vertex=names(V(graph))
+	vertex.label=ifelse(g.vertex %in% unique(c(selected.edges$mod1, selected.edges$mod2)), g.vertex, "")
+	
 	# plot graph
-	plot = plot(graph, vertex.label.color="black", vertex.size=3, vertex.label=NA, 
-	            vertex.label.cex=.5, layout=layout) 
+	plot(graph,
+	     vertex.label.color=vertex.label.color,
+	     vertex.size=3,
+	     vertex.label.dist=vertex.label.dist,
+	     vertex.label.degree=vertex.label.degree,
+	     vertex.label=vertex.label,
+	     vertex.label.cex=vertex.label.cex,
+	     layout=layout) 
 	
 	# second call to plot over with edges of interest
 	legend("right", legend = conditions, pch=21, col=palette, pt.bg=palette, 
 	       pt.cex=1, cex=.8, bty="n", ncol=1)
 	
-  return(plot)
+  return(selected.edges)
 }
 
 # draw a basic network
