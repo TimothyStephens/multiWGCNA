@@ -383,20 +383,20 @@ selectSoftPower <- function(datExpr, sampleTable,
   sft=list()
   
   message("### Picking softpower on combined network ###")
-  s <- pickSoftThreshold(datExpr, powerVector = powers, ...)
+  s <- pickSoftThreshold(t(datExpr), powerVector = powers, ...)
   sft[["combined"]] <- picksoft(s)
   
   # first dimension
   for(trait in unique(conditions1)){
     message("### Picking softpower on ", trait, " ###")
-    s <- pickSoftThreshold(datExpr[,c("X", sampleTable$Sample[sampleTable[,2]==trait])], powerVector = powers, ...)
+    s <- pickSoftThreshold(t(datExpr[,c("X", sampleTable$Sample[sampleTable[,2]==trait])]), powerVector = powers, ...)
     sft[[trait]] <- picksoft(s)
   }
   
   # second dimension
   for(trait in unique(conditions2)){
     message("### Picking softpower on ", trait, " ###")
-    s <- pickSoftThreshold(datExpr[,c("X", sampleTable$Sample[sampleTable[,3]==trait])], powerVector = powers, ...)
+    s <- pickSoftThreshold(t(datExpr[,c("X", sampleTable$Sample[sampleTable[,3]==trait])]), powerVector = powers, ...)
     sft[[trait]] <- picksoft(s)
   }
   
