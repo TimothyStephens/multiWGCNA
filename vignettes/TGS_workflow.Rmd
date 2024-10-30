@@ -1,0 +1,399 @@
+---
+title: "multiWGCNA"
+author: "Timothy Stephens"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    keep_md: yes
+---
+
+
+
+# Setup
+
+Setup R env. Load packages and set default image export formats, size and resolution.
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.height = 8, 
+                      fig.width = 12, 
+                      dev = c("png", "pdf"),
+                      dpi = 1000)
+library(vegan)
+library(DT)
+library(patchwork)
+
+# Install from GitHub to get additional analysis and plotting functions
+#remove.packages("multiWGCNA")
+#devtools::install_github("TimothyStephens/multiWGCNA")
+library(multiWGCNA)
+
+options(scipen = 999) #Prevent scientific notation
+```
+
+
+
+
+
+# Load data
+
+Load expression data and sample info.
+```{r load_data}
+# Download data from the ExperimentHub
+library(ExperimentHub)
+eh = ExperimentHub()
+
+# Note: this requires the SummarizedExperiment package to be installed
+eh_query = query(eh, c("multiWGCNAdata"))
+autism_se = eh_query[["EH8223"]]
+
+# Collect the metadata in the sampleTable
+sampleTable = colData(autism_se)
+
+
+
+samples = as.data.frame(sampleTable)
+data = assays(autism_se)[[1]]
+
+
+
+# Define our conditions for trait/condition 1 and 2
+conditions1.name <- "Disease"
+conditions2.name <- "Region"
+colnames(samples) <- c("Sample", conditions1.name, conditions2.name)
+conditions1 = unique(samples[, conditions1.name])
+conditions2 = unique(samples[, conditions2.name])
+
+# Check the data
+head(data)
+samples
+```
+
+```{r parameters}
+# WGCNA
+mergeCutHeight <- 0
+minModuleSize <- 100
+networkType <- "signed"
+TOMType <- "unsigned"
+deepSplit <- 4
+verbose <- 3
+
+# Test to use for differential module expression ("ANOVA" or "PERMANOVA")
+runDME.test <- "PERMANOVA"
+
+# Permutation analysis
+preservationComparisons.nPermutations <- 100
+PreservationPermutationTest.nPermutations <- 10 # Number of permutations for permutation test
+PreservationPermutationTest.nPresPermutations <- 10 # Number of permutations for modulePreservation function
+
+# List to store results
+results=list()
+```
+
+
+
+
+
+# Network construction
+
+Since we are going to be building multiple networks (the full network, as well as all sub-newtorks defined in `conditions1` and `conditions2`)
+we need to identify the best soft power threshold for each.
+This block runs `pickSoftThreshold` on each network, picks the best soft power, and plots the results.
+If the selected soft power is not condiered optimal, then it can be manually changed.
+```{r selectSoftPower}
+sft <- selectSoftPower(data, samples, conditions1, conditions2)
+
+plots = plotSoftPowerPicks(sft)
+wrap_plots(plots, ncol=3)
+
+# Manually correct soft power
+sft$combined$softPower <- 12
+sft$EAE$softPower      <- 12
+sft$WT$softPower       <- 12
+sft$Cbl$softPower      <- 12
+sft$Ctx$softPower      <- 12
+sft$Hippo$softPower    <- 12
+sft$Sc$softPower       <- 12
+
+plots = plotSoftPowerPicks(sft)
+wrap_plots(plots, ncol=3)
+```
+
+
+Perform network construction (using the selected soft powers), module eigengene calculation, module-trait correlation. Usually the slowest step.
+Network construction happens for the combined network (full `data` set) and all the sub-networks (conditions1.name ID1 only, conditions1.name ID2 only, ..., conditions2.name ID1 only, conditions2.name ID2 only, ...).
+This wrapper also finds the best trait association for each module and identifies outlier modules (i.e. modules driven by a single sample).
+```{r constructNetworks}
+data.networks = constructNetworks2(data, samples, conditions1, conditions2, sft,
+                                   networkType = networkType, TOMType = TOMType, 
+                                   minModuleSize = minModuleSize, maxBlockSize = 25000,
+                                   reassignThreshold = 0, minKMEtoStay = 0, mergeCutHeight = mergeCutHeight,
+                                   numericLabels = TRUE, pamRespectsDendro = FALSE, 
+                                   deepSplit = deepSplit, verbose = verbose)
+```
+
+
+
+
+
+# Identify a module of interest
+
+Next, we perform differential module expression analysis to detect modules with conditions1-associated, conditions2-associated, or conditions1*conditions2-associated expression patterns.
+This incorporates a linear model described in [Tommasini et al. 2023](https://doi.org/10.1186/s12859-023-05233-z) and tests for significance using PERMANOVA or ANOVA. 
+```{r runDME, fig.height = 6, fig.width = 7}
+# Run association test on the "combined" network (could be any of the other sub-networks as well).
+module1.condition <- "combined"
+
+# Run differential module expression analysis (DME) on selected network
+results$diffModExp = runDME(data.networks[[module1.condition]],
+                            samples,
+                            p.adjust="fdr",
+                            test=runDME.test,
+                            testCondition=conditions1.name, # The column of the sampleTable to be resolved
+                            refCondition=conditions2.name,  # The column of the sampleTable to be used as biological variation
+                            plot=TRUE, out=paste(module1.condition, "_DME.pdf", sep='')
+                            )
+
+# Present results as a sortable table
+DT::datatable(results$diffModExp)
+```
+
+
+Select the module from the above table which is associated with our target attribute (in this case, "Disease").
+```{r select_module}
+module1 <- "combined_013"
+```
+
+
+Check the expression of the selected module.
+Note that the values reported in the bottom panel title are *p*-values and not FDR-adjusted like in `results$diffModExp`.
+```{r diffModuleExpression, fig.height = 6, fig.width = 7}
+diffModuleExpression(data.networks[[module1.condition]], 
+                     geneList = topNGenes(data.networks[[module1.condition]], module1), 
+                     design = samples,
+                     test = runDME.test,
+                     plotTitle = module1,
+                     plot = TRUE)
+```
+
+
+
+
+
+# Compare modules by overlap across conditions
+
+Calculating significance of overlap between module in each network using the hypergeometric test (also known as the one-sided Fisher exact test).
+```{r overlapComparisons, fig.height = 8, fig.width = 10}
+results$overlaps=iterate(data.networks, overlapComparisons, plot=TRUE)
+```
+
+
+
+
+
+## Draw the multiWGCNA overlap network
+
+Check to see if selected module is present in any of the sub-networks.
+An easy way to do this is using the network-network correspondences from hypergeometric overlap, which are stored in `results$overlaps`.
+Results are plotted in a visualization scheme that also organizes the three levels of the multiWGCNA analysis: 1) combined network, 2) condition1, and 3) condition2.
+```{r drawMultiWGCNAnetwork, fig.height = 6, fig.width = 7}
+drawMultiWGCNAnetwork2(data.networks,
+                      results$overlaps,
+                      module1,
+                      design = samples,
+                      removeOutliers = TRUE,
+                      alpha = 1e-50,
+                      alpha.vertex = 1e-10, # TGS
+                      layout = NULL,
+                      hjust = 0.4,
+                      vjust = 0.3,
+                      width = 0.5)
+```
+We see that our target module `module1` is really only present in the EAE network, but not any of the other sub-networks. Most importantly, it cannot be resolved in the WT network. This makes `module1` a biologically interesting network, both in terms of differential expression and differential co-expression. 
+
+
+
+
+
+We can identify the EAE module that corresponds to `module1` using the above network, or the following overlap analysis heatmap.
+The colors correspond to -log10(FDR) derived from the hypergeometric test, while the numbers in the cells correspond to the number of genes overlapping. From this plot, we see that the module from the EAE network that corresponds to combined_013 is called EAE_015.
+```{r, fig.height = 8, fig.width = 10}
+bidirectionalBestMatches(results$overlaps$combined_vs_EAE)
+```
+
+
+
+
+
+Select the EAE module with the highest overlap with `module1`. Will be the focus for our downstream analysis.
+```{r select_module2}
+module2.condition <- "EAE"
+module2           <- "EAE_015"
+```
+
+
+
+
+
+Use the TOMFlowPlot to plot the recruitment of genes from one network analysis to another.
+Note that you will need to set `constructNetworks(saveTOMs = TRUE)` in the constructNetworks function above. 
+```{r TOMFlowPlot, fig.height=6, fig.width=4}
+# Load *.RData object's from `constructNetworks`
+toms = lapply(conditions1, function(x) {
+  load(paste0(x, '-block.1.RData'))
+  get("TOM")
+})
+
+# Check selected module
+TOMFlowPlot(data.networks,
+            conditions1,
+            toms,
+            genes_to_label = topNGenes(data.networks[[module2.condition]], module2),
+            color = 'black',
+            alpha = 0.1,
+            width = 0.05)
+```
+
+
+
+
+
+# Observe differential co-expression of top module genes
+
+For `module2`, visually check that genes are co-expressed in `module2.condition` and not co-expressed in all other samples.
+We should see that the top 20 genes (assumes to be representative module members) have uniform expression patterns (they co-vary) in the samples from `module2.condition` and not the other samples.
+```{r, fig.height=5, fig.width=7}
+# Get expression data for top 20 genes in `module2`
+datExpr = GetDatExpr(data.networks[[1]], 
+                     genes = topNGenes(data.networks[[module2.condition]], module2, 20))
+
+# Plot lines overlapping
+coexpressionLineGraph(datExpr, splitBy = 0, fontSize = 0) + 
+  geom_vline(xintercept = 20.5, linetype='dashed')
+# Plot lines separate
+coexpressionLineGraph(datExpr, splitBy = 1.5, fontSize = 2.5) + 
+  geom_vline(xintercept = 20.5, linetype='dashed')
+```
+
+
+
+
+
+# Preservation analysis
+
+Follow up with a preservation analysis between the two conditions in `condition1`. This step can be very slow when `nPermutations` is set high (>>10). 
+```{r, fig.height = 3, fig.width = 7}
+# To enable multi-threading
+#library(doParallel)
+#library(WGCNA)
+#nCores = 2
+#registerDoParallel(cores = nCores)
+#enableWGCNAThreads(nThreads = nCores)
+
+# Turn off multi-threading
+# registerDoSEQ()
+# disableWGCNAThreads()
+
+# Calculate preservation statistics
+results$preservation=iterate(data.networks[conditions1],
+                             preservationComparisons,
+                             write=FALSE,
+                             plot=TRUE,
+                             nPermutations=preservationComparisons.nPermutations)
+```
+
+
+
+
+
+# Determining if preservation value is significant
+
+Perform a permutation procedure that estimates the probability of observing a module with this preservation score. The test is designed to control for the other condition in the sampleTable. In this case, it will equally distribute the samples belonging to each anatomical region when testing preservation of this disease module in the wildtype samples.
+This step is very very slowest! Especially when running with high (>>10) `PreservationPermutationTest.nPermutations` and/or `PreservationPermutationTest.nPresPermutations`.
+Recommended to let this run on a computing cluster overnight. 
+```{r PreservationPermutationTest}
+power <- 12
+
+options(paged.print = FALSE)
+results$permutation.test = PreservationPermutationTest(data.networks$combined@datExpr[sample(nrow(data.networks$combined@datExpr),3000),], 
+                                                       sampleTable, 
+                                                       constructNetworksIn = "EAE", # Construct networks using EAE samples
+                                                       testPreservationIn = "WT", # Test preservation of disease samples in WT samples
+                                                       nPermutations = PreservationPermutationTest.nPermutations, # Number of permutations for permutation test
+                                                       nPresPermutations = PreservationPermutationTest.nPresPermutations, # Number of permutations for modulePreservation function
+                                                       
+                                                       # WGCNA parameters for re-sampled networks (should be the same as used for network construction)
+                                                       networkType = "signed", TOMType = "unsigned", 
+                                                       power = power, minModuleSize = 100, maxBlockSize = 25000,
+                                                       reassignThreshold = 0, minKMEtoStay = 0, mergeCutHeight = mergeCutHeight,
+                                                       numericLabels = TRUE, pamRespectsDendro = FALSE, 
+                                                       deepSplit = 4, verbose = 3
+                                                       )
+```
+
+
+NOTE: module preservation scores are dependent on the module size (larger modules have larger preservation scores), therefor, we must generate the null distribution of preservation scores based on similarly sized modules from each permutation. Must filter out "outlier modules" first, as these are modules where the correlations are driven by a single sample. 
+```{r PreservationScoreDistribution, eval = TRUE}
+# Get results from last analysis
+permutationTestResults <- results$permutation.test
+# Observed preservation score of `module2`
+module2.observed.score = results$preservation$EAE_vs_WT$mod1Preservation[module2, ]$Zsummary.pres
+# The size of the module of interest
+module2.size = results$preservation$EAE_vs_WT$mod1Preservation[module2, ]$moduleSize
+
+
+# Remove outlier modules
+permutationTestResultsFiltered = lapply(permutationTestResults, function(x) x[!x$is.outlier.module,])
+
+# Extract the preservation score distribution
+results$scores.summary = PreservationScoreDistribution(permutationTestResultsFiltered, 
+                                                       moduleOfInterestSize = module2.size
+                                                       )
+
+
+
+# How many times did we observe a score lower than or equal to this observed score?
+z.summary.dist = results$scores.summary$z.summary
+below=length(z.summary.dist[z.summary.dist <= module2.observed.score])
+probability= below/length(z.summary.dist)
+message("Probability of observing a score of ", round(module2.observed.score, 2), " is ", probability)
+```
+
+
+Plot the observed score and computed null distribution on a histogram. 
+```{r plot_PreservationScoreDistribution, eval = TRUE}
+# Plot on a histogram
+ggplot(results$scores.summary, aes(x=z.summary)) + 
+      geom_histogram(color="black", fill="white", bins = 15) +
+      xlab("Preservation score (Z-summary)") +
+      ylab("Frequency") +
+      geom_vline(xintercept=module2.observed.score, color="red3", linetype="solid") +
+      annotate("text", x=module2.observed.score*1.05, y=.9, color="black", 
+               label=paste("~italic(p) == ", probability, sep=''), parse=TRUE) +
+      scale_y_continuous(expand = c(0,0)) +
+      theme_classic() +
+      theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+
+
+# Summarize interesting results from the analyses
+
+Summarize differentially preserved trait-associated modules and differentially expressed modules. 
+```{r summarizeResults}
+# Print a summary of the results
+summarizeResults(data.networks, results)
+```
+
+
+
+
+
+# Session Info
+
+```{r ressionInfo}
+sessionInfo()
+```
+
+
