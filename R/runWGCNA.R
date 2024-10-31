@@ -379,6 +379,7 @@ selectSoftPower <- function(datExpr, sampleTable,
   } else if(inherits(datExpr, "data.frame")){
     datExpr = data.frame(X = rownames(datExpr), datExpr)
   }
+  datExpr$X <- NULL
   
   sft=list()
   
@@ -389,14 +390,14 @@ selectSoftPower <- function(datExpr, sampleTable,
   # first dimension
   for(trait in unique(conditions1)){
     message("### Picking softpower on ", trait, " ###")
-    s <- pickSoftThreshold(t(datExpr[,c("X", sampleTable$Sample[sampleTable[,2]==trait])]), powerVector = powers, ...)
+    s <- pickSoftThreshold(t(datExpr[, sampleTable$Sample[sampleTable[,2]==trait]]), powerVector = powers, ...)
     sft[[trait]] <- picksoft(s)
   }
   
   # second dimension
   for(trait in unique(conditions2)){
     message("### Picking softpower on ", trait, " ###")
-    s <- pickSoftThreshold(t(datExpr[,c("X", sampleTable$Sample[sampleTable[,3]==trait])]), powerVector = powers, ...)
+    s <- pickSoftThreshold(t(datExpr[, sampleTable$Sample[sampleTable[,3]==trait]]), powerVector = powers, ...)
     sft[[trait]] <- picksoft(s)
   }
   
@@ -407,10 +408,9 @@ selectSoftPower <- function(datExpr, sampleTable,
 picksoft <- function(sft){
   # Scale-free topology fit index as a function of the soft-thresholding power
   sft$fitIndices$SFT.index <- -sign(sft$fitIndices$slope)*sft$fitIndices$SFT.R.sq
-  sft$fitIndices <- sft$fitIndices %>% mutate(SFT.index.cum = cumsum(SFT.index))
-  soft_power <- sft$fitIndices %>% subset(SFT.index.cum >= 0.8) %>% .$Power %>% min
+  soft_power <- sft$fitIndices %>% subset(SFT.index >= 0.8) %>% .$Power %>% min
   if(is.infinite(soft_power)) {
-    soft_power <- sft$fitIndices$Power[sft$fitIndices$SFT.index.cum == max(sft$fitIndices$SFT.index.cum)]
+    soft_power <- sft$fitIndices$Power[sft$fitIndices$SFT.index == max(sft$fitIndices$SFT.index)]
   }
   sft$softPower <- soft_power
   return(sft)
@@ -466,7 +466,7 @@ plotSoftPowerPicks <- function(softpowers,
     soft_power <- softpowers[[trait]]$softPower
     
     # get other params:
-    SFT_index_cum <- as.numeric(pt[pt$Power == soft_power, 'SFT.index.cum'])
+    SFT_index <- as.numeric(pt[pt$Power == soft_power, 'SFT.index'])
     sft_r <- as.numeric(pt[pt$Power == soft_power, 'SFT.R.sq'])
     mean_k <- as.numeric(pt[pt$Power == soft_power, 'mean.k.'])
     median_k <- as.numeric(pt[pt$Power == soft_power, 'median.k.'])
@@ -477,19 +477,20 @@ plotSoftPowerPicks <- function(softpowers,
       pt$Power == soft_power, 'white', 'black'
     )
     
-    p <- pt %>% ggplot(aes(x=Power, y=SFT.index.cum)) +
+    p <- pt %>% ggplot(aes(x=Power, y=SFT.index)) +
       geom_rect(aes(xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=0.8), fill='grey80', alpha=0.8, color=NA) +
-      geom_hline(yintercept = SFT_index_cum, linetype='dashed') +
+      geom_hline(yintercept = SFT_index, linetype='dashed') +
+      geom_hline(yintercept = 0, linetype='solid') +
       geom_vline(xintercept = soft_power, linetype= 'dashed') +
       geom_point(
-        data = pt[pt$Power == soft_power,c('Power', 'SFT.index.cum')],
-        aes(x=Power, y=SFT.index.cum),
+        data = pt[pt$Power == soft_power,c('Power', 'SFT.index')],
+        aes(x=Power, y=SFT.index),
         inherit.aes=FALSE,
         color = 'black',
         size=point_size
       ) +
       geom_text(label=pt$Power, color = pt$text_color, size=text_size) +
-      scale_y_continuous(limits = c(0,1), breaks=c(0, 0.2, 0.4, 0.6, 0.8, 1)) +
+      scale_y_continuous(limits = c(-1,1), breaks=c(-1, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1)) +
       ggtitle(paste(trait, " (softpower:", soft_power, ")", sep='')) +
       ylab('Scale-free Topology Model Fit') +
       xlab('Soft Power Threshold') +

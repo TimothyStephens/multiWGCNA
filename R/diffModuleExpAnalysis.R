@@ -96,7 +96,9 @@ expressionHeatmap <- function(datExpr,
                               clusterGenes=FALSE, 
                               title=NULL){
 	datExpr=t(cleanDatExpr(datExpr))
-	subset=datExpr[toupper(rownames(datExpr)) %in% toupper(geneList),]
+	subset=subset(datExpr, subset=toupper(rownames(datExpr)) %in% toupper(geneList))
+	#subset=datExpr[toupper(rownames(datExpr)) %in% toupper(geneList),]
+	subset=as.data.frame(subset)
 	subset=subset[match(toupper(geneList), toupper(rownames(subset))),]
 	subset=na.omit(subset)
 	mean=rowMeans(subset)
@@ -105,7 +107,7 @@ expressionHeatmap <- function(datExpr,
 	zscoreMatrix=na.omit(zscoreMatrix)
 	zscoreMatrix[zscoreMatrix<lower]=lower
 	zscoreMatrix[zscoreMatrix>upper]=upper
-	collapsedMatrix=reshape2::melt(zscoreMatrix)
+	collapsedMatrix=reshape2::melt(as.matrix(zscoreMatrix))
 	colnames(collapsedMatrix)=c("Gene", "Sample", "Zscore")
 	if(clusterGenes) {
 		tree=hclust(dist(zscoreMatrix), method = "average")
@@ -254,7 +256,9 @@ diffModuleExpression <- function(WGCNAobject,
 
 	cleanDatExpr=t(cleanDatExpr(datExpr))
 	geneList=geneList[geneList %in% rownames(cleanDatExpr)]
-	subset=cleanDatExpr[rownames(cleanDatExpr) %in% geneList,]
+	# Need to use `subset` since when length(geneList)==1, the data.frame will be incorrectly autoconverted to a vector by R
+	subset=subset(cleanDatExpr, subset=rownames(cleanDatExpr) %in% geneList)
+	#subset=cleanDatExpr[rownames(cleanDatExpr) %in% geneList, ]
 	if(mode=="Zscore"){
 		mean=rowMeans(subset)
 		stdev=apply(subset,1,sd)
@@ -283,8 +287,9 @@ diffModuleExpression <- function(WGCNAobject,
 	       			plot.title=element_text(hjust=0.5), panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
 	       			axis.title.x=element_blank()) +
 	      			geom_hline(yintercept=0, linetype="solid", color = "black", size=0.5)
-
+	
 	datExpr=datExpr[,c("X", mergedData$Sample)]
+	
 	heatmap <- expressionHeatmap(datExpr, geneList, plotTitle=plotTitle, column.labels=FALSE, axis.titles=FALSE, legend=TRUE)
 
 	if(test=="ANOVA"){
@@ -298,12 +303,13 @@ diffModuleExpression <- function(WGCNAobject,
 	  p.value=c(permanova$aov.tab$`Pr(>F)`[1:3])
 	  pval.df=data.frame(Factors, p.value)
 	}
-
+	
+	n <- length(unique(design[[testCondition]]))
 	boxplot <- ggplot(data=mergedData, aes(x=eval(parse(text=refCondition)), y=moduleExpression, color=eval(parse(text=testCondition)))) +
     				labs(title=paste0("p: ", paste(pval.df$Factors, signif(pval.df$p.value,2), sep = '=', collapse = ', ')),
    					y="Expression", x=refCondition) +
     				geom_boxplot(width=1/length(unique(mergedData[,refCondition]))) +
-    				scale_color_manual(values=c("red", "blue")) +
+    				scale_color_manual(values=c("red", "blue", "green", "orange", "purple", "brown", "black", "yellow", "pink", "lightblue", "lightgreen")[1:n]) +
     				guides(color=guide_legend(title=testCondition)) +
     				theme(panel.background = element_blank(), axis.line = element_line(colour = "black"),
     					panel.grid.major = element_blank(), panel.grid.minor = element_blank(), plot.title=element_text(hjust=0.5))
